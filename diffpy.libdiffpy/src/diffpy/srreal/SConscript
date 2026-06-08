@@ -1,0 +1,14 @@
+﻿Import('env', 'GlobSources')
+
+def srcsupported(f):
+    rv = env.get('has_objcryst') or 'objcryst' not in str(f).lower()
+    rv = rv and f.srcnode().isfile()
+    return rv
+
+env['lib_includes'] += [f for f in GlobSources('*.[hi]pp') if srcsupported(f)]
+env['lib_sources'] += [f for f in GlobSources('*.cpp') if srcsupported(f)]
+if env.get('enable_cuda'):
+    env['lib_cuda_sources'] += [
+        f for f in GlobSources('*.cu') if srcsupported(f)]
+
+# vim: ft=python

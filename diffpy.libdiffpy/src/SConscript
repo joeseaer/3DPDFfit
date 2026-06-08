@@ -1,0 +1,231 @@
+﻿import os
+
+Import('env')
+
+# Build environment configuration --------------------------------------------
+
+# Insert LIBRARY_PATH explicitly because some compilers
+# ignore it in the system environment.
+env.PrependUnique(LIBPATH=env['ENV'].get('LIBRARY_PATH', '').split(':'))
+
+# Use Intel C++ compiler if requested by the user.
+icpc = None
+if env['tool'] == 'intelc':
+    icpc = env.WhereIs('icpc')
+    if not icpc:
+        print("Cannot find the Intel C/C++ compiler 'icpc'.")
+        Exit(1)
+    env.Tool('intelc', topdir=icpc[:icpc.rfind('/bin')])
+
+fast_linkflags = ['-s']
+
+# Specify minimum C++ standard.  Allow later standard from sconscript.local.
+# In case of multiple `-std` options the last option holds.
+env.PrependUnique(CXXFLAGS='-std=c++11', delete_existing=1)
+
+# Platform specific intricacies.
+if env['PLATFORM'] == 'darwin':
+    env.AppendUnique(CXXFLAGS='-ftemplate-depth-256')
+    env.Append(SHLINKFLAGS=['-install_name', '$TARGET.abspath'])
+    env.AppendUnique(SHLINKFLAGS='-headerpad_max_install_names')
+    fast_linkflags[:] = []
+
+# Compiler specific options
+if icpc:
+    # options for Intel C++ compiler on hpc dev-intel07
+    env.PrependUnique(CCFLAGS=['-w1', '-fp-model', 'precise'])
+    env.PrependUnique(LIBS=['imf'])
+    fast_optimflags = ['-fast', '-no-ipo']
+else:
+    # g++ options
+    env.PrependUnique(CCFLAGS=['-Wall'])
+    fast_optimflags = ['-ffast-math']
+
+# Configure build variants
+if env['build'] == 'debug':
+    env.Append(CCFLAGS='-g')
+elif env['build'] == 'coverage':
+    env.CacheDir(None)
+    env.Append(CCFLAGS=['-g', '--coverage', '-O0'])
+    env.Append(LINKFLAGS='--coverage')
+elif env['build'] == 'fast':
+    env.AppendUnique(CCFLAGS=['-O3'] + fast_optimflags)
+    env.AppendUnique(CPPDEFINES={'NDEBUG' : None})
+    env.AppendUnique(LINKFLAGS=fast_linkflags)
+
+if env['profile']:
+    env.AppendUnique(CCFLAGS='-pg')
+    env.AppendUnique(LINKFLAGS='-pg')
+
+
+# configure boost and ObjCryst libraries unless non-relevant.
+skip_configure = (GetOption('clean') or GetOption('help') or
+                  (['sdist'] == list(COMMAND_LINE_TARGETS)))
+if not skip_configure:
+    SConscript('SConscript.configure')
+
+# when cleaning make sure to also purge ObjCryst files
+if GetOption('clean'):
+    env['has_objcryst'] = True
+
+# Define lists for storing library source and include files.
+env['lib_includes'] = []
+env['lib_sources'] = []
+env['lib_cuda_sources'] = []
+env['lib_datafiles'] = []
+
+# Subsidiary SConscripts -----------------------------------------------------
+
+# The targets that concern unit tests.
+targets_that_test = set(('test', 'alltests'))
+
+# Short circuit if we test an already installed library.  Do not define
+# any further targets as they may conflict with the installed files.
+if env['test_installed']:
+    SConscript('tests/SConscript')
+    if not targets_that_test.issuperset(COMMAND_LINE_TARGETS):
+        print('Warning: only test targets are available when '
+              '"test_installed=True".')
+    Return()
+
+assert not env['test_installed']
+
+# Here we do not test the installed library.  Any diffpy headers
+# should thus be looked up from our source tree.
+env.PrependUnique(CPPPATH=Dir('.'))
+
+# Load the version script first to resolve the majorminor tuple
+SConscript('diffpy/SConscript.version')
+
+# Path where datafiles should be installed
+env['runtimepath'] = os.path.join(
+        env['datadir'], 'diffpy/libdiffpy-%i.%i' % env['majorminor'])
+SConscript('runtime/SConscript')
+
+# Load all other sconscripts that update lib_includes and lib_sources
+SConscript('diffpy/SConscript')
+
+# Define sdist target for creating source distribution bundle
+# Do so only if required to avoid extra git executions.
+# Note: See .gitattributes for files excluded from sdist.
+if 'sdist' in COMMAND_LINE_TARGETS:
+    SConscript('SConscript.sdist')
+
+# Top Level Targets ----------------------------------------------------------
+
+# lib -- shared library object
+
+# use new environment with extra libraries needed for libdiffpy.
+env_lib = env.Clone()
+# Setup GSL, the GNU Scientific library.
+env_lib.ParseConfig("gsl-config --cflags --libs")
+# The dladdr call in runtimepath.cpp requires the dl library.
+env_lib.AppendUnique(LIBS=['dl'])
+
+cuda_objects = []
+cuda_object_files = []
+if env.get('enable_cuda'):
+    nvcc = env.WhereIs('nvcc')
+    if not nvcc:
+        print("Cannot find the NVIDIA CUDA compiler 'nvcc'.")
+        Exit(1)
+    cuda_home = os.path.dirname(os.path.dirname(nvcc))
+    env_lib.AppendUnique(CPPDEFINES={'DIFFPY_ENABLE_CUDA' : None})
+    env_lib.AppendUnique(LIBS=['cudart', 'cufft'])
+    env_lib.AppendUnique(LIBPATH=[os.path.join(cuda_home, 'lib64')])
+    env_cuda = env_lib.Clone(NVCC=nvcc)
+    env_cuda.SetDefault(NVCCFLAGS=[
+        '-O3',
+        '-gencode=arch=compute_75,code=sm_75',
+        '-gencode=arch=compute_80,code=sm_80',
+        '-gencode=arch=compute_89,code=sm_89',
+    ])
+    cuda_action = (
+        '$NVCC $NVCCFLAGS -std=c++11 -Xcompiler -fPIC '
+        '-DDIFFPY_ENABLE_CUDA $_CPPINCFLAGS -c $SOURCE -o $TARGET')
+
+    def cuda_shared_object_emitter(target, source, env):
+        for tgt in target:
+            tgt.attributes.shared = 1
+        return target, source
+
+    env_cuda['BUILDERS']['CudaSharedObject'] = Builder(
+        action=cuda_action, suffix='.os', src_suffix='.cu',
+        emitter=cuda_shared_object_emitter)
+    cuda_objects = [
+        env_cuda.CudaSharedObject(cu) for cu in env['lib_cuda_sources']]
+    cuda_object_files = [str(obj[0]) for obj in cuda_objects]
+
+libdiffpy = env_lib.SharedLibrary(
+    'diffpy', env['lib_sources'] + cuda_object_files)
+if cuda_objects:
+    env_lib.Depends(libdiffpy, cuda_objects)
+# Clean up .gcda and .gcno files from coverage analysis.
+env_lib.Clean(libdiffpy, Glob('diffpy/*.gc??'))
+env_lib.Clean(libdiffpy, Glob('diffpy/srreal/*.gc??'))
+env_lib.Depends(libdiffpy, env['lib_includes'])
+Export('libdiffpy')
+
+lib = Alias('lib', [libdiffpy])
+Default(lib)
+
+# Define targets related to testing.  Do so only when testing is requested.
+# This enables library build on machines without cxxtest.
+if targets_that_test.intersection(COMMAND_LINE_TARGETS):
+    SConscript('tests/SConscript')
+
+# Installation targets.
+
+prefix = env['prefix']
+
+# install-lib
+install_lib = env.Install(env['libdir'], libdiffpy)
+if env['PLATFORM'] == 'darwin':
+    # DARWIN_INSTALL_NAME can be pre-set in sconscript.local
+    env.SetDefault(DARWIN_INSTALL_NAME='$TARGET.abspath')
+    env.AddPostAction(install_lib,
+                      'install_name_tool -id $DARWIN_INSTALL_NAME $TARGET')
+if env['PLATFORM'] == 'posix' and WhereIs('ldconfig'):
+    opts = '' if os.getuid() == 0 else '-n'
+    env.AddPostAction(install_lib,
+                      'ldconfig %s $TARGET.dir' % opts)
+Alias('install-lib', install_lib)
+
+# install-include
+ninc = len(Dir('.').path) + 1
+inc_target_path = lambda f: os.path.join(env['includedir'], f.path[ninc:])
+include_targets = [inc_target_path(f) for f in env['lib_includes']]
+install_include = InstallAs(include_targets, env['lib_includes'])
+Alias('install-include', install_include)
+
+# install-data
+nrt = len(Dir('runtime').path) + 1
+data_target_path = lambda f: os.path.join(env['runtimepath'], f.path[nrt:])
+data_targets = [data_target_path(f) for f in env['lib_datafiles']]
+install_data = InstallAs(data_targets, env['lib_datafiles'])
+Alias('install-data', install_data)
+
+# install
+Alias('install', ['install-lib', 'install-include', 'install-data'])
+# do not install headers and data when shared library cannot be installed.
+if 'install' in COMMAND_LINE_TARGETS:
+    Requires(install_include, install_lib)
+    Requires(install_data, install_lib)
+
+# Coverage related targets.
+
+# zerocounters
+cdatadirs = ['diffpy', 'diffpy/srreal', 'tests']
+cdatafiles = [f for d in cdatadirs for f in Glob(d + '/*.gcda')]
+zerocounters = Alias('zerocounters', [], [Delete(f) for f in cdatafiles])
+Ignore(cdatadirs, cdatafiles)
+AlwaysBuild(zerocounters)
+
+# when both 'test' and 'zerocounters' are requested, make sure
+# to build them in correct order.
+require_ordered_targets = ('test' in COMMAND_LINE_TARGETS and
+                           'zerocounters' in COMMAND_LINE_TARGETS)
+if require_ordered_targets:
+    Depends('test', zerocounters)
+
+# vim: ft=python
