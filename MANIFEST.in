@@ -1,0 +1,5 @@
+include README.md
+include LICENSE
+recursive-include data *.cif
+recursive-include diffpy.libdiffpy SConstruct SConscript *.cpp *.hpp *.cu
+recursive-include diffpy.srreal setup.py *.py *.cpp

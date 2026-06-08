@@ -11,3 +11,4 @@ Included changes:
 - Update libdiffpy SCons build files for CUDA-enabled compilation.
 - Update srreal Python bindings and calculator exports.
 - Add Si CIF sample input and project README.
+- Add lightweight setup.py packaging metadata for source distribution.

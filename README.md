@@ -161,6 +161,21 @@ Use these files as an integration patch against a compatible DiffPy source
 tree. After rebuilding `diffpy.libdiffpy` and reinstalling `diffpy.srreal`,
 the two calculator classes are available from the Python API shown above.
 
+## Packaging
+
+This repository includes a lightweight `setup.py` so the project can be handled
+as a Python source package:
+
+```bash
+pip install .
+python setup.py sdist
+```
+
+The Python package stores project metadata and includes the C++/CUDA source
+files in source distributions. Building the actual calculators still requires
+integrating the included DiffPy source files into a compatible
+`diffpy.libdiffpy` and `diffpy.srreal` build.
+
 ## Output
 
 Both calculators can export dense 3D grids using:
