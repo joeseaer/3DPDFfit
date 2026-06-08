@@ -1,0 +1,13 @@
+Add CPU and CUDA PDF3D calculator implementations
+
+Introduce PDF3DCPUCalculator and PDF3DGPUCalculator for 3D real-space PDF
+calculation in the DiffPy stack. The CPU calculator provides a portable scalar
+implementation with configurable cpuworkfactor, while the GPU calculator adds
+CUDA kernels and cuFFT-based q-window/postprocessing acceleration.
+
+Included changes:
+- Add PDF3DCPUCalculator source and header files.
+- Add PDF3DGPUCalculator and CUDA kernel source/header files.
+- Update libdiffpy SCons build files for CUDA-enabled compilation.
+- Update srreal Python bindings and calculator exports.
+- Add Si CIF sample input and project README.
