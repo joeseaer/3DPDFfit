@@ -14,7 +14,7 @@ setup(
     long_description=README.read_text(encoding="utf-8"),
     long_description_content_type="text/markdown",
     author="3DPDFfit contributors",
-    license="BSD-3-Clause",
+    license="GPL-3.0-only",
     python_requires=">=3.9",
     packages=find_packages(),
     include_package_data=True,
